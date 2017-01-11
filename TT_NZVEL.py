@@ -4,8 +4,28 @@ Created on Sun Sep  4 09:57:49 2016
 
 @author: grantobrien
 
-Just a dump of test code so far...
+plan:
+for each eq location eq(xyz), above the plate interface p(xyz),
+calculate the travel time EQ_owt(xyz) to every point in the velocity model v(xyz)
+using the eq source point (zero contour) --> the time to reciever (geonet station)
+is first arrival.
+Then to get twt...
+for each reciever location r(xyz) calculate the travel time R_owt(xyz) to every
+point in the velocity model v(xyz) using the reciever location as source point
+(zero contour), then add: EQ_owt(xyz) + R_owt(xyz) = EQ_R_TWT 
+which should be twt from eq(xyz) to r(xyz)
+then for each point on the plate interface p(xyz) find the twt by slicing the 
+twt 3d grid (EQ_R_TWT) by the p(xyz) surface (as done before)
+ ---> may need to reduce vel model size as this needs to be done for each 
+reciever (but only once?)
 
+TODO: crop vel model by land dem?
+only uses selected stations in section plots
+
+NOTE: to make eq location match zero contour use and even X,Y grid
+if the vel model x, y are used there is a missmatch because of the 
+shape of the globe etc. even thought itis correct the eq location is not in 
+same projection.
 """
 
 import numpy as np
@@ -24,21 +44,21 @@ from obspy.geodetics import gps2dist_azimuth
 
 
 import sys, os
-#mylibpath = os.path.abspath(u'/Users/marine/OBrienG/')
-#if not mylibpath in sys.path:
-#    sys.path.append(mylibpath)
-#else:
-#    #print "re-appending", mylibpath
-#    sys.path.remove(mylibpath)
-#    sys.path.append(mylibpath)
+mylibpath = os.path.abspath(u'/Users/marine/OBrienG/')
+if not mylibpath in sys.path:
+    sys.path.append(mylibpath)
+else:
+    #print "re-appending", mylibpath
+    sys.path.remove(mylibpath)
+    sys.path.append(mylibpath)
 
-import earthquake_tools as ET
+from GOBEQ import earthquake_tools as ET
 
 
 
 class reflections(object):
     """
-    calculate twt for earthquakes...
+    calculate twt for earthquakes and reflections off subduction interface.
     """
     def __init__(self, model, stations):
         self.model = model
@@ -54,6 +74,7 @@ class reflections(object):
         """
         self.dim = dim
         self.x, self.y, self.z, self.v, self.mask = np.load(self.model)
+        #self.z = self.z + 15000.
         #if dim is None:
         #    self.dim = self.x.shape
         self.xscaler = np.nanmax(self.x)
@@ -70,13 +91,11 @@ class reflections(object):
         self.z[self.mask != 0.0] = np.nan
         self.v = self.v*1000.
         self.v[self.mask != 0.0] = np.nan
-        
-        #self.v = np.flipud(self.v)
 
 
     def add_reciever_locations(self, network='NZ'):
         """
-        stations = "GIS_data/GEONET.csv"
+        stations = "../GIS_data/GEONET.csv"
         """
         self.stations = PD.read_csv(self.stations, low_memory=False, skiprows=1)
         if network is not 'ALL':
@@ -96,13 +115,12 @@ class reflections(object):
         self.xloc = x
         self.yloc = y
         self.zloc = z
-        print self.xloc, self.yloc, self.zloc
+        #print self.xloc, self.yloc, self.zloc
         #--- make phi ---#
         X, Y, Z = np.mgrid[self.xmin:self.xmax:self.dim,
                            self.ymin:self.ymax:self.dim,
                            self.zmin:self.zmax:self.dim]
         self.phi = X**2+Y**2+Z**2
-        #self.phi = np.flipud(self.phi)
         #--- locate x,y,z within phi ---#
         X, Y, Z = np.ogrid[self.xmin:self.xmax:self.dim,
                            self.ymin:self.ymax:self.dim,
@@ -128,67 +146,81 @@ class reflections(object):
         self.zspacing = int(self.Z[1,1,1]-self.Z[0,0,0])
 
 
+    def name_match(self, dataDict, searchin, search4):
+        """
+        for searching in a pandas dataframe
+        """
+        #I = np.searchsorted(searchin, search4)
+        I = np.where(searchin == search4)[0]
+        found = dataDict[int(I[0]):int(I[0])+1]
+        
+        return found
+        
+
     def add_earthquake_location(self, catalogue=None, event_id=None,
                                 lon=None, lat=None, depth=None):
         """
         will come in as lat,long,depth(km),
         maybe from a catalogue and eventid
+        - quakeml
+        - csv
         """
+        self.event_id = event_id
         if catalogue is not None:
-            print "selecting an earthquake from a catalogue is not initiated yet"
-            return
-        self.lon, self.lat, self.depth = lon, lat, depth
+            print "selecting an earthquake from a catalogue is work in progress"
+            self.cat = PD.read_csv(catalogue, sep=',')
+            self.eq = self.name_match(self.cat, searchin=self.cat['event_id'],
+                                      search4=self.event_id)
+            self.lon, self.lat, self.depth = self.eq['longitude'].values, \
+            self.eq['latitude'].values, self.eq['depth'].values
+            #return
+        elif lon is not None and lat is not None and depth is not None:
+            self.lon, self.lat, self.depth = lon, lat, depth
         self.eqx, self.eqy = ET.CT_nztm_to_wgs84([self.lon, self.lat],
                                                  islist=False, inverse=True)
         self.eqz = self.depth*1000.
         
         
-    def calculate_travel_time(self, dxyz=None):
+    def calculate_travel_time(self, cell_size=None):
         """
         Uses scikits fmm (in C) to calculate the travel time from the 
         zero contour (earthquake or receiver) to everywhere in the 
         3D grid/volume.
-        TODO: check x and y spacing is right (it changes everything!!!!!!!!)
+        cell_size is to be a list or tuple specifying the 
+        cell dimensions [x, y, z] \n
+        TODO: check x and y spacing is right (it's the major control)
         ---> the order of dx=[tt.zspacing, tt.xspacing, tt.yspacing] looks best?
         make even in x, y and z if needed = regrid
         """
-        #self.v = np.flipud(self.v)
-        
-        
-        if dxyz is None:
-            dxyz = [self.xspacing, self.yspacing, self.zspacing]
+        #--- define cell size ---#
+        if cell_size is None:
+            cellx = self.xspacing
+            celly = self.yspacing
+            cellz = self.zspacing
+        else:
+            cellx, celly, cellz = cell_size
         #--- calculate the travel times ---#
         time1 = time.time()
         self.t = skfmm.travel_time(self.phi, self.v,
-                                   dx=[dxyz[0], dxyz[1], dxyz[2]])
+                                   dx=[cellx,
+                                       celly,
+                                       cellz],)
         time2 = time.time()
         print "calculated TT", self.t.shape, "in ",(time2-time1), "seconds"
         
 
-    def calculate_distances(self, dxyz=None):
+    def plot_slice(self, direction='z', slice_no=-1, style='p'):
         """
-        Uses scikits fmm (in C) to calculate the distances from the 
-        zero contour (earthquake or receiver) to every cell in the 
-        3D grid/volume.
-
+        TODO: slice direction
         """
-        if dxyz is None:
-            dxyz = [self.xspacing, self.yspacing, self.zspacing]
-        #--- claculate the distances ---#
-        time1 = time.time()
-        self.d = skfmm.distance(self.phi_copy, dx=[dxyz[0], dxyz[1], dxyz[2]])
-        time2 = time.time()
-        print "calculated distances", self.d.shape, "in ",(time2-time1), "seconds"
-
-
-    def plot_slice(self, direction='z', slice_no=-1, dists=None):
-        nz = r"GIS_data/NZ_COAST"
+        nz = r"../GIS_data/NZ_COAST"
         nz = shapefile.Reader(nz)
         shapes = nz.shapes()
+        #--- north and south islands ---#
         nxy = np.array(shapes[462].points)[::5]
         sxy = np.array(shapes[18].points)[::5]
 
-        hik_chull = r"GIS_data/hik_sub_convex"
+        hik_chull = r"../GIS_data/hik_sub_convex"
         hik = shapefile.Reader(hik_chull)
         shapes = hik.shapes()
         hxy = np.array(shapes[0].points)
@@ -199,28 +231,23 @@ class reflections(object):
         hlon, hlat = ET.transCoords_WGS84_NZTM(hlon, hlat)
 
         self.slice_no = slice_no
-        plt.figure()
+        plt.figure(figsize=(15,8))
         depth = str(int(np.nanmin(self.z[:,:,int(self.slice_no)])))
-        eqloc = str([self.xloc, self.yloc, self.zloc])
-        plt.title("slice at %s"%depth+"km, for EQ at: %s"%eqloc)
-        #cont = plt.contourf(self.X[:,:,int(self.slice_no)],
-        #                    self.Y[:,:,int(self.slice_no)],
-        #                    self.t[:,:,int(self.slice_no)],
-        #                    50, cmap=plt.cm.jet_r)
-        cont = plt.pcolormesh(self.X[:,:,int(self.slice_no)],
-                              self.Y[:,:,int(self.slice_no)],
-                              self.t[:,:,int(self.slice_no)],
-                              cmap=plt.cm.jet_r)
+        eqloc = str([self.xloc, self.yloc, self.zloc]) # nztm
+        #eqloc = str([self.lon, self.lat, self.zloc]) # lon/lat
+        plt.title("slice at %s"%depth+"km, n for EQ at: \n %s"%eqloc)
+        if style == 'c':
+            cont = plt.contourf(self.X[:,:,int(self.slice_no)],
+                                self.Y[:,:,int(self.slice_no)],
+                                self.t[:,:,int(self.slice_no)],
+                                50, cmap=plt.cm.jet_r)
+        elif style == 'p':
+            cont = plt.pcolormesh(self.X[:,:,int(self.slice_no)],
+                                  self.Y[:,:,int(self.slice_no)],
+                                  self.t[:,:,int(self.slice_no)],
+                                  cmap=plt.cm.jet_r)
         cb = plt.colorbar(cont)
-        cb.set_label('OWT')
-        #--- distances ---#
-        if dists is not None:
-            d = plt.contour(self.X[:,:,int(self.slice_no)],
-                            self.Y[:,:,int(self.slice_no)],
-                            self.d[:,:,int(self.slice_no)]/1000.,
-                            10,
-                            colors='k')
-            plt.clabel(d, inline=1, fontsize=8)                    
+        cb.set_label('OWT (model)')
         #--- eq loc ---#
         plt.contour(self.X[:,:,int(self.slice_no)], 
                     self.Y[:,:,int(self.slice_no)],
@@ -247,7 +274,7 @@ class reflections(object):
         downsample for tests as it will be slow
         ---> figure out how to just get the indices
         """
-        grd = gdal.Open(r'GIS_data/SRL-Hikurangi_interface.grd')
+        grd = gdal.Open(r'../GIS_data/SRL-Hikurangi_interface.grd')
         gt = grd.GetGeoTransform()
         gextent = (gt[0], gt[0]+grd.RasterXSize*gt[1],
                    gt[3]+grd.RasterYSize*gt[5], gt[3])
@@ -277,7 +304,7 @@ class reflections(object):
         tt_xyzt as vstack(n.ravel()).T
         try cKDTree
         """
-        xyz = np.loadtxt(r'GIS_data/SRL-Hikurangi_interface.xyz',
+        xyz = np.loadtxt(r'../GIS_data/SRL-Hikurangi_interface.xyz',
                          delimiter='\t')
         x, y, z = xyz[:,0], xyz[:,1], -xyz[:,2]
         x = x[~np.isnan(z)]
@@ -287,13 +314,14 @@ class reflections(object):
         #tt_xyz = np.vstack([self.x.ravel(), self.y.ravel(),
         #                     self.z.ravel()*1000.]).transpose()
         tt_xyz = np.vstack([self.X.ravel(), self.Y.ravel(),
-                             self.Z.ravel()]).transpose()                     
+                            self.Z.ravel()]).transpose()                     
         surf = np.vstack([sx, sy, sz]).transpose()
     
         t = time.time()
-        print "starting extraction (KDTree search) at:", t
+        print "starting extraction (KDTree search)"
         tree = KDTree(surf)#, leafsize=)
-        distances, ndx = tree.query([tt_xyz], k=1, distance_upper_bound=limit)
+        distances, ndx = tree.query([tt_xyz], k=1, distance_upper_bound=limit,
+                                    n_jobs=2)
         print distances.shape
         d = distances[0]
         mask = np.isfinite(d)
@@ -329,83 +357,71 @@ class reflections(object):
                 h5f = h5py.File(self.h5file, 'a')
                 h5f.create_dataset(array_name, data=self.t)
                 h5f.close()
+                
 
-
-    def distance_at_receivers(self):
+    def time_at_recievers(self, elev):
         """
-        should be integrated with time at recs, but this is a test
-        on 2D space (not 3D)
+        get the t value at each receiver location (grid cell)
+        keep in pd df so can get names etc.
+        TODO: auto pick up receiver elev based on slice no 
+        NB: I recently changed it to search on XYz - seems ok so far
+        TODO: for receiver locs get upper slice first to save time?
         """
         self.stations['NZTM_E'] = self.stations_xy[0]
         self.stations['NZTM_N'] = self.stations_xy[1]
-        self.stations['ELEVATION'] = np.linspace(-15000.,-15000.,
-                                                 len(tt.stations_xy[0]))
-        t = time.time()
-        print "retrieving reciever distances (cKDTree search) at:", t
-        tree = cKDTree(np.vstack([self.X.ravel(),
-                                  self.Y.ravel(),
-                                  self.Z.ravel()]).transpose())
-        td, self.d_ndx = tree.query(np.vstack([self.stations['NZTM_E'],
-                                               self.stations['NZTM_N'],
-                                               self.stations['ELEVATION']]).transpose(),
-                                               k=1)
-        self.od = self.d.ravel()[self.d_ndx] 
-               
-
-    def time_at_recievers(self):
-        """
-        get the t value at each receiver location (each grid cell) \n
-        uses pd df so can get names etc.
-        """
-        self.stations['NZTM_E'] = self.stations_xy[0]
-        self.stations['NZTM_N'] = self.stations_xy[1]
-        self.stations['ELEVATION'] = np.linspace(-15000.,-15000.,
+        self.relev = elev
+        self.stations['ELEVATION'] = np.linspace(self.relev, self.relev,
                                                  len(tt.stations_xy[0]))
         #self.xi = np.searchsorted(self.X.ravel(), self.stations.NZTM_E, side='right')
         #self.yi = np.searchsorted(self.Y.ravel(), self.stations.NZTM_N, side='right')
         t = time.time()
-        print "retrieving reciever owt (cKDTree search) at:", t
+        print "retrieving reciever owt (cKDTree search)"
+        #--- if use xyz instead of XYZ it takes longer time 9mins ---#
+        
         tree = cKDTree(np.vstack([self.X.ravel(),
                                   self.Y.ravel(),
                                   self.Z.ravel()]).transpose())
-        td, self.t_ndx = tree.query(np.vstack([self.stations['NZTM_E'],
-                                               self.stations['NZTM_N'],
-                                               self.stations['ELEVATION']]).transpose(),
-                                               k=1)
-        self.receiver_IP = np.vstack([self.X.ravel(), self.Y.ravel(), 
-                                       self.Z.ravel(),
-                                       self.t.ravel()]).transpose()[self.t_ndx]        
+        self.td, self.ndx = tree.query(np.vstack([self.stations['NZTM_E'],
+                                      self.stations['NZTM_N'],
+                                      self.stations['ELEVATION']]).transpose(),
+                                      k=1, n_jobs=2)
+        
+        self.receiver_IP = np.vstack([self.X.ravel(), 
+                                      self.Y.ravel(), 
+                                      self.Z.ravel(),
+                                      self.t.ravel()]).transpose()[self.ndx]        
         #plt.scatter(tt.receiver_IP[:,0], tt.receiver_IP[:,1], c=-tt.receiver_IP[:,3], linewidths=0)
         nt = time.time()
         print "took:", (nt-t)/60, "mins"
-
         self.rlon, self.rlat = ET.CT_nztm_to_wgs84([self.receiver_IP[:,0],
                                                     self.receiver_IP[:,1]],
                                                     islist=False,
                                                     inverse=False)
         distAzi = []
         for i, v in enumerate(self.rlat):
-            d = gps2dist_azimuth(self.rlat[i], self.rlon[i], self.lat, self.lon)
+            d = gps2dist_azimuth(self.rlat[i], self.rlon[i],
+                                 self.lat, self.lon)
             distAzi.append(d)
         self.distAzi = np.array(distAzi)
         self.receiver_IP = np.hstack([self.receiver_IP, self.distAzi])
 
-        #--- is order correct ? ---#
+        #--- how do i know order is right??? ---#        
         self.stations['out_x'] = self.receiver_IP[:,0]
         self.stations['out_y'] = self.receiver_IP[:,1]
         self.stations['OWT'] = self.receiver_IP[:,3]
         self.stations['eq2receiver_dist_m'] = self.distAzi[:,0]
         self.stations['eq2receiver_azi'] = self.distAzi[:,1]
         self.stations['eq2receiver_bazi'] = self.distAzi[:,2]
-        
-        
+
+
     def assign_negative_distances(self, ac):
         """
-        ac is azimuth you want to split 90 eiath side of 
+        ac is azimuth you want to split on
+        only works >270 to 90 i.e upper part of circle
         """
         al = np.rad2deg(np.deg2rad(ac) - np.deg2rad(90))%360
         ar = np.rad2deg(np.deg2rad(ac) + np.deg2rad(90))%360
-        print al, ar
+        #print al, ar
             
         for i, v in enumerate(self.distAzi[:,2]):
             if self.distAzi[:,2][i] > al and self.distAzi[:,2][i] < ar:
@@ -413,110 +429,52 @@ class reflections(object):
                 
             elif self.distAzi[:,2][i] < al and self.distAzi[:,2][i] > ar:
                 self.distAzi[:,0][i] = -self.distAzi[:,0][i]
-            
-        self.stations['eq2receiver_dist_m'] = self.distAzi[:,0][i]
-        
-        
-    def IP_plot(self):
+        self.stations['eq2receiver_dist_m'] = self.distAzi[:,0]         
+
+    def IP_plot(self):    
         plt.figure()
         plt.plot(self.distAzi[:,0], self.receiver_IP[:,3], '.')
         
+
     
 if __name__ == "__main__":
+    #model = r'models/nzvel_even_grid_cropped_NZ_500j_ds10.npy'
     model = r'models/nzvel_even_grid_cropped_NZ_100j_ds1.npy'
-    stations = r"GIS_data/GEONET.csv"
+    stations = r"../GIS_data/GEONET.csv"
     tt = reflections(model, stations)
     tt.load_model(dim=100j)
-    tt.add_reciever_locations(network='NZ')#'ALL'
-    tt.add_earthquake_location(catalogue=None, event_id=None,
-                               lon=176.88, lat=-39.44, depth=13.)
+    tt.add_reciever_locations(network='NZ')#'ALL', 'NZ'
+    #tt.add_earthquake_location(catalogue=None, event_id='2016p390950',
+    #                           lon=176.88225, lat=-39.441883, depth=13.)
+    tt.add_earthquake_location(catalogue='basic_eq_catalogue.csv',
+                               event_id='2016p390950')
+
     #r = 0
     #tt.create_phi(tt.stations_xy[0][r], tt.stations_xy[1][r], 0.0)
     tt.create_phi(tt.eqx, tt.eqy, tt.eqz)
-    
-    #--- calculate distances as a check ---#
-    tt.calculate_distances()
-    tt.distance_at_receivers()
-
-    tt.calculate_travel_time()#dxyz=[40000, 30000, 25000])
+    tt.calculate_travel_time()#cell_size=[40e3,40e3,40e3])
     ##tt.save_H5('results/receivers.h5', tt.stations.Code[r:r+1].values[0])
-    tt.plot_slice(direction='z', slice_no=-1, dists=True)
-    tt.time_at_recievers()
-    tt.assign_negative_distances(ac=20)
-    
+    slice_no = -3 # (-3 is 0km, 0 is 750km, -1 is -15km)
+    tt.plot_slice(direction='z', slice_no=slice_no, style='p')
+
+    tt.time_at_recievers(elev=0.) #-15000.
     #o = tt.select_xyz_nearest_surface(limit=1000)
     #tt.extract_values_on_surface_via_grid(vds=20, sds=20)
-
-    scat = plt.scatter(tt.receiver_IP[:,0], tt.receiver_IP[:,1], c=tt.receiver_IP[:,3],
-                   cmap=plt.cm.jet_r, linewidths=0, marker='s', s=25)
-                   #vmin=tt.t[:,:,tt.slice_no].min(),
-                   #vmax=tt.t[:,:,tt.slice_no].max())
-    plt.colorbar(scat)
-    #tt.IP_plot()
+    tt.assign_negative_distances(ac=25)
+    
+    scat = plt.scatter(tt.receiver_IP[:,0], tt.receiver_IP[:,1],
+                       c=tt.receiver_IP[:,3],
+                       cmap=plt.cm.jet_r, marker='s', s=30,
+                       linewidths=0.2,
+                       vmin=tt.t[:,:,int(slice_no)].min(),
+                       vmax=tt.t[:,:,int(slice_no)].max())
+    plt.colorbar(scat, label='OWT (receivers)')
     #plt.close('all')
-
-
-
-import obspy
-st = obspy.read(r'D:/earthquakes/out_stream.h5')
-
-st.trim(endtime=st[0].stats.starttime+250.)
-
-fig = plt.figure(figsize=(15, 8))                
-ax = fig.add_axes([0.05,0.3,0.58,0.45])
-#gwf.stream.sort()
-st.plot(type='section', handle=True,
-        fig=fig, time_down=True, linewidth=0.25,
-        grid_linewidth=0.25, vred=None, scale=5)
-
-d = []
-t = []
-for tr in st:
-    d.append(tr.stats.distance)
-    t.append(tr.stats.ip_onset)
-    ax.plot(tr.stats.distance/242833.7268669467, tr.stats.ip_onset,
-            color='r', marker='.', linestyle='')
-
-d = np.array(d)
-
-wtf = 1.3
-plt.plot(tt.distAzi[:,0]/242833.7268669467, tt.receiver_IP[:,3], 'b.')
-#plt.plot(tt.od/242833.7268669467, tt.receiver_IP[:,3], 'g.')
-
-
-#--------#
-
-
-#from matplotlib.table import Table
-#def checkerboard_table(data, fmt='{:.2f}', bkg_colors=['yellow', 'white']):
-#    fig, ax = plt.subplots()
-#    ax.set_axis_off()
-#    tb = Table(ax, bbox=[0,0,1,1])
-#
-#    nrows, ncols = data.shape
-#    width, height = 1.0 / ncols, 1.0 / nrows
-#
-#    # Add cells
-#    for (i,j), val in np.ndenumerate(data):
-#        # Index either the first or second item of bkg_colors based on
-#        # a checker board pattern
-#        idx = [j % 2, (j + 1) % 2][i % 2]
-#        color = bkg_colors[idx]
-#
-#        tb.add_cell(i, j, width, height, text=fmt.format(val), 
-#                    loc='center', facecolor=color)
-#
-#    # Row Labels...
-#    for i, label in enumerate(data.index):
-#        tb.add_cell(i, -1, width, height, text=label, loc='right', 
-#                    edgecolor='none', facecolor='none')
-#    # Column Labels...
-#    for j, label in enumerate(data.columns):
-#        tb.add_cell(-1, j, width, height/2, text=label, loc='center', 
-#                           edgecolor='none', facecolor='none')
-#    ax.add_table(tb)
-#    return fig
-
+    
+    tt.IP_plot()
+    
+    p = plt.imread('graphics/no_time_match_tt2fast_crop.png')
+    plt.imshow(p, extent=[-1500000,1500000,0,200], aspect=10000, alpha=0.3)
 
 
 #from mpl_toolkits.mplot3d import Axes3D
