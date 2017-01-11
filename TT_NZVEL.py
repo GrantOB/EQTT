@@ -4,28 +4,8 @@ Created on Sun Sep  4 09:57:49 2016
 
 @author: grantobrien
 
-plan:
-for each eq location eq(xyz), above the plate interface p(xyz),
-calculate the travel time EQ_owt(xyz) to every point in the velocity model v(xyz)
-using the eq source point (zero contour) --> the time to reciever (geonet station)
-is first arrival.
-Then to get twt...
-for each reciever location r(xyz) calculate the travel time R_owt(xyz) to every
-point in the velocity model v(xyz) using the reciever location as source point
-(zero contour), then add: EQ_owt(xyz) + R_owt(xyz) = EQ_R_TWT 
-which should be twt from eq(xyz) to r(xyz)
-then for each point on the plate interface p(xyz) find the twt by slicing the 
-twt 3d grid (EQ_R_TWT) by the p(xyz) surface (as done before)
- ---> may need to reduce vel model size as this needs to be done for each 
-reciever (but only once?)
+Just a dump of test code so far...
 
-TODO: crop vel model by land dem?
-only uses selected stations in section plots
-
-NOTE: to make eq location match zero contour use and even X,Y grid
-if the vel model x, y are used there is a missmatch because of the 
-shape of the globe etc. even thought itis correct the eq location is not in 
-same projection.
 """
 
 import numpy as np
