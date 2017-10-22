@@ -4,7 +4,8 @@ Created on Sun Sep  4 09:57:49 2016
 
 @author: grantobrien
 
-plan:
+THIS IS OLD FILE, METHODS HAVE CHANGES SIGNIFICANTLY!
+
 for each eq location eq(xyz), above the plate interface p(xyz),
 calculate the travel time EQ_owt(xyz) to every point in the velocity model v(xyz)
 using the eq source point (zero contour) --> the time to reciever (geonet station)
